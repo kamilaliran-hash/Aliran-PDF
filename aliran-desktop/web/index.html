@@ -408,6 +408,18 @@ body.fmton #alltools{display:none}
   #tpanel{position:absolute;right:0;top:0;bottom:0;z-index:30;box-shadow:-4px 0 20px rgba(0,0,0,.1)}
   .hide-sm{display:none!important}
 }
+@media (max-width:1400px){
+  #top{overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+  #top::-webkit-scrollbar{display:none}
+  #top>*{flex-shrink:0}
+}
+@media (max-width:700px){
+  #top .logo{font-size:0;gap:0}
+  #top .tb{font-size:0;gap:0;padding-left:9px;padding-right:9px}
+  #top .seg button{font-size:0;gap:0;padding-left:10px;padding-right:10px}
+  #tpanel{max-width:88vw}
+  .modal{max-width:96vw}
+}
 </style>
 </head>
 <body class="empty hideTools">
@@ -1468,7 +1480,8 @@ function loadScript(urls) {
 const PJ = '6.2.108';
 // Desktop (exe) mode: served from the local launcher, everything bundled offline.
 const LOCAL = /^(127\.0\.0\.1|localhost)$/.test(location.hostname) && !!location.port;
-const DOCOPTS = LOCAL ? { cMapUrl: '/lib/cmaps/', cMapPacked: true, standardFontDataUrl: '/lib/standard_fonts/', wasmUrl: '/lib/wasm/', iccUrl: '/lib/iccs/' } : {};
+const ANDROID = !LOCAL && typeof window.AliranAndroid === 'object' && !!window.AliranAndroid;
+const DOCOPTS = LOCAL || ANDROID ? { cMapUrl: '/lib/cmaps/', cMapPacked: true, standardFontDataUrl: '/lib/standard_fonts/', wasmUrl: '/lib/wasm/', iccUrl: '/lib/iccs/' } : {};
 async function importFirst(urls) {
   let err;
   for (const u of urls) { try { return await import(u); } catch (e) { err = e; console.warn('import failed', u, e); } }
@@ -1476,7 +1489,7 @@ async function importFirst(urls) {
 }
 const PJ_URLS = f => [`https://cdn.jsdelivr.net/npm/pdfjs-dist@${PJ}/legacy/build/${f}`, `https://unpkg.com/pdfjs-dist@${PJ}/legacy/build/${f}`];
 async function loadLibs() {
-  if (LOCAL) {
+  if (LOCAL || ANDROID) {
     window.pdfjsLib = await import('/lib/pdf.min.mjs');
     pdfjsLib.GlobalWorkerOptions.workerSrc = '/lib/pdf.worker.min.mjs';
     await loadScript(['/lib/pdf-lib.min.js']);
@@ -2871,7 +2884,19 @@ function getDownloads() {
   }
   return dlProm;
 }
+function u8b64(u8) { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); }
+const MIMES = { pdf: 'application/pdf', zip: 'application/zip', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', tif: 'image/tiff', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', doc: 'application/msword', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', rtf: 'application/rtf', html: 'text/html', txt: 'text/plain', xml: 'text/xml', ps: 'application/postscript', eps: 'application/postscript' };
+async function androidSave(name, data) {
+  const u8 = data instanceof Uint8Array ? data : data instanceof Blob ? new Uint8Array(await data.arrayBuffer()) : typeof data === 'string' ? new TextEncoder().encode(data) : new Uint8Array(data);
+  const ext = (name.match(/\.([a-z0-9]+)$/i) || [, ''])[1].toLowerCase();
+  busy('Saving ' + name + '…'); await tick();
+  let r; try { r = JSON.parse(window.AliranAndroid.saveFile(name, MIMES[ext] || 'application/octet-stream', u8b64(u8))); } catch (e) { r = { error: e.message || String(e) }; }
+  unbusy();
+  if (r.error) { toast('Could not save: ' + r.error, 'err'); return false; }
+  toast('Saved to ' + r.path); S.dirty = false; return true;
+}
 async function saveFile(name, data) {
+  if (ANDROID) return androidSave(name, data);
   const dl = await getDownloads();
   if (dl) {
     try { await dl.save({ filename: name, data: new Blob([data]) }); toast('Saved ' + name); S.dirty = false; return true; }
@@ -4165,6 +4190,7 @@ async function exitApp() {
   if (S.dirty && !(await confirmBox('Exit Aliran PDF?', 'You have unsaved changes that will be lost.', 'Exit without saving'))) return;
   S.dirty = false;
   if (LOCAL) { try { await fetch('/api/exit', { method: 'POST' }); } catch (e) { } }
+  if (ANDROID) { window.AliranAndroid.exit(); return; }
   window.close();
   setTimeout(() => toast(LOCAL ? 'Aliran PDF has stopped — you can close this window' : 'Close this tab to exit'), 500);
 }
@@ -4173,7 +4199,7 @@ function openAbout() {
   modal({ title: 'About Aliran PDF', body: h('div', { class: 'about' },
     h('img', { src: logo ? logo.href : '', alt: '' }),
     h('h2', {}, 'Aliran PDF'),
-    h('div', { class: 'ver' }, `Version ${APP_VERSION} · ${LOCAL ? 'Desktop edition for Windows' : 'Web edition'}`),
+    h('div', { class: 'ver' }, `Version ${APP_VERSION} · ${LOCAL ? 'Desktop edition for Windows' : ANDROID ? 'Android edition' : 'Web edition'}`),
     h('table', {},
       h('tr', {}, h('td', {}, 'Software owner'), h('td', { class: 'own' }, APP_OWNER)),
       h('tr', {}, h('td', {}, 'Copyright'), h('td', {}, `© ${new Date().getFullYear()} ${APP_OWNER}. All rights reserved.`)),
@@ -4907,8 +4933,15 @@ async function pdRenderSheet(sheet, built, k, o) {
 }
 function caps_m(sheet) { return Math.max(4, (sheet.A ? sheet.A.x : 12) - 2); }
 
+async function androidPrint() {
+  busy('Preparing to print…');
+  try { const bytes = await buildPdf(S.pages, { ocr: false }); window.AliranAndroid.printPdf(S.name.replace(/\.pdf$/i, '') || 'document', u8b64(bytes)); }
+  catch (e) { toast('Print failed: ' + (e.message || e), 'err'); }
+  finally { unbusy(); }
+}
 async function openPrint() {
   if (!S.pages.length) return; finishEdit();
+  if (ANDROID) return androidPrint();
   if (!LOCAL) return openBrowserPrint();
   busy('Loading printers…'); let pr;
   try { pr = await (await fetch('/api/printers')).json(); } catch (e) { pr = { error: e.message }; } finally { unbusy(); }
@@ -5345,6 +5378,25 @@ function onKey(e) {
   }
   $('#loading').remove();
   if (LOCAL) loadFontList();
+  if (ANDROID) {
+    document.body.classList.add('android');
+    window.aliranOpenIntent = async () => { // a PDF opened from another app ("Open with" / "Share")
+      let j; try { const t = window.AliranAndroid.takeIntentFile(); if (!t) return; j = JSON.parse(t); } catch (e) { toast('Could not open the file: ' + e.message, 'err'); return; }
+      if (j.error) { toast('Could not open the file: ' + j.error, 'err'); return; }
+      const bin = atob(j.b64), u8 = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+      const nm = j.name || 'document.pdf';
+      await handleFiles([new File([u8], nm, { type: /\.pdf$/i.test(nm) || u8[0] === 0x25 ? 'application/pdf' : (j.mime || '') })], { replace: !S.pages.length });
+    };
+    window.aliranBack = () => { // Android back button: close what is open first, then ask before leaving unsaved work
+      const m = $$('.mback'); if (m.length) { const x = m[m.length - 1].querySelector('.mhead .x'); if (x) x.click(); else m[m.length - 1].remove(); return true; }
+      if ($('.mmenu')) { closeMenus(); return true; }
+      if (S.editing) { finishEdit(); return true; }
+      if (S.cvtOpen) { S.cvtOpen = false; syncCvt(); syncFmt(); return true; }
+      if (S.dirty) { exitApp(); return true; }
+      return false;
+    };
+    setTimeout(() => window.aliranOpenIntent(), 0);
+  }
   if (LOCAL) {
     document.title = 'Aliran PDF';
     const WIN = new URLSearchParams(location.search).get('w') || '0';

@@ -37,24 +37,26 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
-      - name: Build debug APK (installable, debug-signed)
-        working-directory: android
-        run: ./gradlew --no-daemon assembleDebug
-      - name: Build signed release APK (only when signing secrets are set)
+      - name: Restore signing key from the ALIRAN_KEYSTORE_BASE64 secret
         if: ${{ env.KS_B64 != '' }}
-        working-directory: android
+        run: |
+          echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/aliran-release.jks"
+          echo "ALIRAN_KEYSTORE=$RUNNER_TEMP/aliran-release.jks" >> "$GITHUB_ENV"
+      - name: Build APK
+        working-directory: aliran-desktop/android
         env:
           ALIRAN_KEYSTORE_PASSWORD: ${{ secrets.ALIRAN_KEYSTORE_PASSWORD }}
-          ALIRAN_KEY_ALIAS: ${{ secrets.ALIRAN_KEY_ALIAS }}
-          ALIRAN_KEY_PASSWORD: ${{ secrets.ALIRAN_KEY_PASSWORD }}
         run: |
-          echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
-          ALIRAN_KEYSTORE="$RUNNER_TEMP/release.jks" ./gradlew --no-daemon assembleRelease
-      - name: Collect APKs
+          chmod +x gradlew
+          if [ -n "$KS_B64" ]; then ./gradlew --no-daemon assembleRelease; else ./gradlew --no-daemon assembleDebug; fi
+      - name: Collect APK
         run: |
           mkdir -p dist
-          cp android/app/build/outputs/apk/debug/app-debug.apk dist/AliranPDF-debug.apk
-          if [ -f android/app/build/outputs/apk/release/app-release.apk ]; then cp android/app/build/outputs/apk/release/app-release.apk dist/AliranPDF.apk; fi
+          out=aliran-desktop/android/app/build/outputs/apk
+          if [ -f $out/release/app-release.apk ]; then cp $out/release/app-release.apk dist/AliranPDF.apk
+          else cp $out/debug/app-debug.apk dist/AliranPDF-debug.apk
+            echo "::warning::No ALIRAN_KEYSTORE_BASE64 secret - built a debug-signed APK. Add the secret to sign with your release key."
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: AliranPDF-android

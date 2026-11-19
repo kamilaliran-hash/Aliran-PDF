@@ -1,0 +1,80 @@
+// Aliran PDF for Android. The editor itself is the same web app as the Windows version
+// (../web); it is copied into the APK at build time, so the app works fully offline.
+
+plugins {
+    id 'com.android.application'
+}
+
+abstract class CopyWebApp extends DefaultTask {
+    @InputDirectory abstract DirectoryProperty getSource()
+    @OutputDirectory abstract DirectoryProperty getOutputDir()
+    @Inject abstract FileSystemOperations getFs()
+    @TaskAction void run() {
+        fs.sync {
+            from(source)
+            into(outputDir.dir('web'))
+        }
+    }
+}
+
+def copyWebApp = tasks.register('copyWebApp', CopyWebApp) {
+    source = rootProject.layout.projectDirectory.dir('../web')
+    outputDir = layout.buildDirectory.dir('generated/aliranWeb')
+}
+
+android {
+    namespace 'com.kamil.aliranpdf'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.kamil.aliranpdf'
+        minSdk 29
+        targetSdk 34
+        versionCode 190
+        versionName '1.9.0'
+    }
+
+    // Release signing key: app/aliran-release.jks on your PC (never commit it — the repo is public),
+    // or, on GitHub Actions, the keystore from the ALIRAN_KEYSTORE_BASE64 secret.
+    def ksPath = System.getenv('ALIRAN_KEYSTORE') ?: file('aliran-release.jks').path
+    def ksPass = System.getenv('ALIRAN_KEYSTORE_PASSWORD') ?: 'aliranpdf'
+    def hasKey = new File(ksPath).isFile()
+
+    signingConfigs {
+        if (hasKey) {
+            release {
+                storeFile new File(ksPath)
+                storePassword ksPass
+                keyAlias System.getenv('ALIRAN_KEY_ALIAS') ?: 'aliran'
+                keyPassword System.getenv('ALIRAN_KEY_PASSWORD') ?: ksPass
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (hasKey) signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+
+    androidResources {
+        noCompress += ['wasm', 'mjs', 'bcmap']
+    }
+}
+
+androidComponents {
+    onVariants(selector().all()) { variant ->
+        variant.sources.assets.addGeneratedSourceDirectory(copyWebApp) { it.outputDir }
+    }
+}
